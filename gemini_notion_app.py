@@ -4,11 +4,12 @@ This runs both the MCP server and a Flask API that uses Gemini with MCP access
 """
 
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import os
 import json
 import requests
 from datetime import datetime, timedelta
-import google.generativeai as genai
+import google.genai as genai
 import threading
 import asyncio
 from typing import Any, Sequence
@@ -167,6 +168,7 @@ def create_notion_context(data_summary):
 
 # Flask App
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
 @app.route('/')
 def home():
