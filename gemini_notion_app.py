@@ -1,26 +1,14 @@
 """
-Combined Gemini + MCP + Notion Integration for Railway
-This runs both the MCP server and a Flask API that uses Gemini with MCP access
+Gemini + Notion Integration for Railway
+Flask API that uses Gemini with Notion data access
 """
 
 from flask import Flask, request, jsonify
-from flask_cors import CORS
 import os
 import json
 import requests
 from datetime import datetime, timedelta
 import google.genai as genai
-import threading
-import asyncio
-from typing import Any, Sequence
-
-# Import MCP components
-try:
-    from mcp.server import Server
-    from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, TextContent
-except ImportError:
-    print("MCP not installed - MCP features will be disabled")
 
 # Configuration
 NOTION_TOKEN = os.getenv("NOTION_API_KEY")
@@ -168,7 +156,14 @@ def create_notion_context(data_summary):
 
 # Flask App
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+
+# CORS Headers - Add to every response
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
 
 @app.route('/')
 def home():
@@ -176,23 +171,16 @@ def home():
     <h1>Gemini + Notion Hollywood Intelligence</h1>
     <p>Available endpoints:</p>
     <ul>
-        <li><a href="/status">/status</a> - Check Notion connection</li>
-        <li>/search?keyword=awards - Search Notion</li>
-        <li>/recent?days=7 - Get recent news</li>
-        <li>/chat (POST) - Chat with Gemini (has access to your Notion data)</li>
+        <li><a href="/status">/status</a> - Check connection</li>
+        <li>/search?keyword=awards - Search data</li>
+        <li>/recent?days=7 - Get recent entries</li>
+        <li>/chat (POST) - Chat with Gemini</li>
     </ul>
-    <h2>Usage Example:</h2>
-    <pre>
-POST /chat
-{
-  "message": "Search my Notion for Golden Globes news and summarize it"
-}
-    </pre>
     '''
 
 @app.route('/status')
 def status():
-    """Check Notion connection"""
+    """Check connection"""
     try:
         data = get_all_data()
         total_entries = sum(db['count'] for db in data.values())
@@ -212,7 +200,7 @@ def status():
 
 @app.route('/search')
 def search():
-    """Search Notion databases"""
+    """Search databases"""
     keyword = request.args.get('keyword', '')
     
     if not keyword:
@@ -231,7 +219,7 @@ def search():
 
 @app.route('/recent')
 def recent():
-    """Get recent news"""
+    """Get recent entries"""
     days = request.args.get('days', 7, type=int)
     
     try:
@@ -241,14 +229,20 @@ def recent():
         return jsonify({
             "days": days,
             "total_entries": total,
+            "by_database": {db_id: len(entries) for db_id, entries in recent_news.items()},
             "data": recent_news
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/chat', methods=['POST'])
+@app.route('/chat', methods=['POST', 'OPTIONS'])
 def chat():
-    """Chat with Gemini using Notion data as context"""
+    """Chat with Gemini using Notion data"""
+    
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        return '', 204
+    
     if not GEMINI_API_KEY:
         return jsonify({
             "error": "GEMINI_API_KEY not configured"
@@ -268,14 +262,13 @@ def chat():
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-pro')
         
-        # Check if user wants to search/query Notion
+        # Check if user wants to search/query data
         search_keywords = ['search', 'find', 'recent', 'latest', 'show me', 'what']
-        should_fetch_notion = any(keyword in user_message.lower() for keyword in search_keywords)
+        should_fetch_data = any(keyword in user_message.lower() for keyword in search_keywords)
         
         notion_context = ""
         
-        if should_fetch_notion:
-            # Determine what to fetch
+        if should_fetch_data:
             if 'recent' in user_message.lower() or 'latest' in user_message.lower():
                 days = 7
                 if 'week' in user_message.lower():
@@ -284,7 +277,7 @@ def chat():
                     days = 30
                 
                 notion_data = get_recent_entries(days)
-                notion_context = f"\n\nRecent Notion data (last {days} days):\n{create_notion_context(notion_data)}"
+                notion_context = f"\n\nRecent data (last {days} days):\n{create_notion_context(notion_data)}"
             
             else:
                 # Try to extract search keyword
@@ -293,14 +286,12 @@ def chat():
                     if word.lower() in ['search', 'find', 'about'] and i + 1 < len(words):
                         search_term = words[i + 1]
                         search_results = search_databases(search_term)
-                        notion_context = f"\n\nNotion search results for '{search_term}':\n{create_notion_context(search_results[:5])}"
+                        notion_context = f"\n\nSearch results for '{search_term}':\n{create_notion_context(search_results[:5])}"
                         break
         
         # Build prompt
-        system_prompt = """You are an AI assistant with access to JC's Hollywood intelligence databases from Notion. 
-These databases contain entertainment news, industry updates, and information about talent like Zuri Hall, Jennifer Love Hewitt, and others.
-
-When the user asks questions, use the Notion data provided to give accurate, helpful answers. 
+        system_prompt = """You are an AI assistant with access to Hollywood intelligence data. 
+Provide accurate, helpful answers about entertainment news, talent, and industry updates.
 Focus on brand partnerships, PR opportunities, awards season coverage, and strategic insights."""
 
         full_prompt = f"{system_prompt}\n\n{notion_context}\n\nUser: {user_message}\n\nAssistant:"
